@@ -1,0 +1,233 @@
+//-----------------------------------------------------------------------------
+// MSXHub Script
+// Revision: 1
+//
+// This VR-Script example connects to the MSX-Hub API and operate with it.
+// MSXHub site: https://msxhub.com/
+// It is needed to execute in a MSXVR computer (https://msxvr.com)
+// VR-Script Author: Alberto De Hoyo Nebot
+
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  
+// See the GNU General Public License for more details:
+// http://www.gnu.org/licenses/
+//-----------------------------------------------------------------------------
+
+class MSXHub implements DOS_Program
+{
+	constants:
+		API_URL = "http://api.msxhub.com/api/";
+		
+	properties: 
+		http = null;
+		
+	virtual Start()
+	{
+		_http = GetEngine().CreateHTTPManager();
+		_console = GetDOS().GetConsole();
+		http = _http;
+	
+		while (1)
+		{
+			_cmd = _console.Input(">");
+			_cmdargs = String_ToList(_cmd, " ");
+			switch (_cmdargs[0])
+			{
+				case "categories":
+				{
+					_buffer = _http.Get(API_URL + "categories");
+					if (_buffer)
+					{
+						_str = Buffer_GetString(_buffer, 0);
+						_console.PrintLn(_str);
+						Buffer_Delete(_buffer);
+					}
+				}
+				break;
+				case "list":
+				{
+					if (sizeof(_cmdargs) > 1)
+					{
+						_key = String_Trim(_cmdargs[1]);
+						if (_key == "category")
+						{
+							if (sizeof(_cmdargs) > 2)
+								_buffer = _http.Get(API_URL + "list", [["category", _cmdargs[2]]]);
+							else
+								_buffer = _http.Get(API_URL + "list");
+						}
+						else if (_key != "")
+						{
+							_buffer = _http.Get(API_URL + "search/" + _key);
+						}
+						else
+						{
+							_buffer = _http.Get(API_URL + "list");
+						}
+					}
+					else
+						_buffer = _http.Get(API_URL + "list");
+						
+					if (_buffer)
+					{
+						_str = Buffer_GetString(_buffer, 0);
+						_list = String_ToList(_str, "\n");
+						Buffer_Delete(_buffer);
+						_numLines = 0;
+						for (i=0; i<sizeof(_list); i++)
+						{
+							_list[i] = String_RTrim(_list[i]);
+							_line = String_ToList(_list[i], " ");
+							_str = "";
+							for (k=1; k<sizeof(_line); k++)
+								_str += _line[k] + " ";
+							_console.PrintLn("[/bold]" + _line[0] + "[/def] " + _str);
+							_numLines++;
+							if (_numLines == 22)
+							{
+								_console.Print("[/gray]Press space to continue or ESC to cancel[/def]");
+								if (_console.WaitForKey([KEY_SPACE, KEY_ESCAPE]) == KEY_ESCAPE)
+									i = sizeof(_list);
+								_console.Print("\r                                              \r");
+								_numLines = 0;
+							}
+						}
+					}
+				}
+				break;
+				case "play":
+				{
+					if (sizeof(_cmdargs) > 1)
+					{
+						_package = String_UpperCase(_cmdargs[1]); 
+						_lastVersion = GetLastVersion(_http, _package);
+						//https://msxhub.com/api/QUARTET/1.1-1/pages
+						_buffer = _http.Get(API_URL + _package + "/" + _lastVersion + "/pages");
+						_numPages = int(Buffer_GetString(_buffer, 0));
+						Buffer_Delete(_buffer);
+						for (i=1; i<=_numPages; i++)
+						{
+							//https://msxhub.com/api/QUARTET/1.1-1/files/{page}
+							_buffer = _http.Get(API_URL + _package + "/" + _lastVersion + "/files/" + string(i));
+							_str = Buffer_GetString(_buffer, 0);
+							_list = String_ToList(_str, "\n");
+							Buffer_Delete(_buffer);
+							for (k=0; k<sizeof(_list); k++)
+							{
+								_list[k] = String_Trim(_list[k]);
+								_ps = Path_Split(_list[k]);
+								if (_ps[3] == ".rom")
+								{
+									_tempFolder = GetEngine().GetTempFolder();
+									GetEngine().CreateFolder(_tempFolder + "/msxhub/");
+									_file = _tempFolder + "/msxhub/" + _list[k];
+									_console.PrintLn("Downloading..." + _list[k]);
+									_http.Download (GetEngine().GetPath(_file), "http://files.msxhub.com/" + _package + "/" + _lastVersion + "/get/" + _package + "/" + _list[k]);
+									GetDOS().Execute("play \"" + _file + "\" /model msxtr");
+									break;
+								}
+							}
+						}
+					}
+				}
+				break;
+				case "info":
+				{
+					//http://api.msxhub.com/api/ALIEN8/info
+					if (sizeof(_cmdargs) > 1)
+					{
+						_package = String_UpperCase(_cmdargs[1]); 
+						_list = GetInfo(_http, _package);
+						for (i=0; i<sizeof(_list); i++)
+						{
+							_console.PrintLn(_list[i]);
+						}
+					}
+				}
+				break;
+				case "files":
+				{
+					if (sizeof(_cmdargs) > 1)
+					{
+						_package = String_UpperCase(_cmdargs[1]);
+						_lastVersion = GetLastVersion(_http, _package); 
+						//https://msxhub.com/api/QUARTET/1.1-1/pages
+						_buffer = _http.Get(API_URL + _package + "/" + _lastVersion + "/pages");
+						_numPages = int(Buffer_GetString(_buffer, 0));
+						Buffer_Delete(_buffer);
+						for (i=1; i<=_numPages; i++)
+						{
+							//https://msxhub.com/api/QUARTET/1.1-1/files/{page}
+							_buffer = _http.Get(API_URL + _package + "/" + _lastVersion + "/files/" + string(i));
+							_str = Buffer_GetString(_buffer, 0);
+							_list = String_ToList(_str, "\n");
+							Buffer_Delete(_buffer);
+							for (k=0; k<sizeof(_list); k++)
+							{
+								_console.PrintLn(_list[k]);
+							}
+						}
+					}
+				}
+				break;
+				case "help":
+				{
+					_console.PrintLn("-------------------------------------");
+					_console.PrintLn("MSXHUB - VRScript - HELP");
+					_console.PrintLn("-------------------------------------");
+					_console.PrintLn("[/bold]categories[/def]");
+					_console.PrintLn("[/bold]list[/def]");
+					_console.PrintLn("[/bold]list <name>[/def]");
+					_console.PrintLn("[/bold]list category <name>[/def]");
+					_console.PrintLn("[/bold]play <name>[/def]");
+					_console.PrintLn("[/bold]info <name>[/def]");
+					_console.PrintLn("[/bold]files <name>[/def]");
+					_console.PrintLn("[/bold]quit[/def]");
+				}
+				break;
+				case "quit":
+				{	
+					End(0);
+					break;
+				}
+			}
+		}
+	}
+	
+	virtual Final()
+	{
+		GetEngine().DestroyHTTPManager(http);
+	}
+	
+	function GetInfo(_http, _name)
+	{
+		_package = String_UpperCase(_name); 
+		_buffer = _http.Get(API_URL + _package + "/info");
+		_str = Buffer_GetString(_buffer, 0);
+		_list = String_ToList(_str, "\n");
+		Buffer_Delete(_buffer);
+		return _list;
+	}
+	
+	function GetLastVersion(_http, _name)
+	{
+		_list = GetInfo(_http, _name);
+		_lastVersion = "1.0";
+		for (i=0; i<sizeof(_list); i++)
+		{
+			if (String_FindStr(_list[i], "Latest version"))
+			{
+				_list = String_ToList(_list[i], ":");
+				_lastVersion = String_Trim(_list[1]);
+				break;
+			}
+		}
+		return _lastVersion;
+	}
+}
