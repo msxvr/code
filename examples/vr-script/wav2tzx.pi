@@ -1,0 +1,305 @@
+// Original C code: https://github.com/ryge/wav2tzx/blob/master/src/decode_wav.c
+// Original Author: ryge
+// Ported to VR-Script by: Alberto De Hoyo Nebot
+// TODO: Conversion process slow - needs logic optimization
+
+class WAV2TZX implements DOS_Program
+{
+	constants:
+		PULSE_LOW = 95;
+		PULSE_HIGH = 159;
+		PULSE_UNDEF = 0;
+		STATE_NOISE = 0;
+		STATE_PILOT = 1;
+		STATE_SYNC = 2;
+		STATE_DATA = 3;
+		STATE_ONE = 4;
+		STATE_ZERO = 5;
+		STATE_END = 6;
+		
+	properties:
+		val = 0;
+		b = 0;
+		blockData = null;
+		blockDataLen = 0;
+		ground = 127;
+
+	virtual Start()
+	{
+		_console = GetDOS().GetConsole();
+		
+		blockData = Buffer_New(65536);
+
+		if (GetNumParams() == 0)
+		{
+			_console.PrintLn("WAV2TZX file.wav file.tzx"); 	
+			End(1);
+			return;
+		}
+		
+		_infile = GetEngine().FileOpen(GetParam(0), FILE_MODE_READ);
+		if (!_infile)
+		{
+			_console.PrintError("file.wav error");
+			End(1);
+			return;
+		}
+
+		_outfile = createFile(GetParam(1));
+		if (!_outfile)
+		{
+			_console.PrintError("file.tzx error");
+			End(1);
+			return;
+		}
+
+        // Header of a wave file
+        _riff_id = _infile.ReadChars(4);
+        _riff_size = _infile.ReadInt();
+        _riff_format = _infile.ReadInt();
+        _fmt_id = _infile.ReadChars(4);
+        _fmt_size = _infile.ReadInt();
+        _fmt_format = _infile.ReadShort();
+        _fmt_channels = _infile.ReadShort();
+        _fmt_sample_rate = _infile.ReadInt();
+        _fmt_byte_rate = _infile.ReadInt();
+        _fmt_block_align = _infile.ReadShort();
+        _fmt_bits_per_sample = _infile.ReadShort();
+        _data_id = _infile.ReadChars(4);
+        _data_size = _infile.ReadInt();
+        
+        _console.PrintLn("RIFF_ID:" + _riff_id);
+        _console.PrintLn("RIFF_SIZE:" + _riff_size);
+        _console.PrintLn("RIFF_FORMAT:" + _riff_format);
+        _console.PrintLn("FMT_ID:" + _fmt_id);
+        _console.PrintLn("FMT_SIZE:" + _fmt_size);
+        _console.PrintLn("FMT_FORMAT:" + _fmt_format);
+        _console.PrintLn("FMT_CHANNELS:" + _fmt_channels);
+        _console.PrintLn("FMT_SAMPLE_RATE:" + _fmt_sample_rate);
+        _console.PrintLn("FMT_BYTE_RATE:" + _fmt_byte_rate);
+        _console.PrintLn("FMT_BLOCK_ALIGN:" + _fmt_block_align);
+        _console.PrintLn("FMT_BITS_PER_SAMPLE:" + _fmt_bits_per_sample);
+        _console.PrintLn("DATA_ID:" + _data_id);
+        _console.PrintLn("DATA_SIZE:" + _data_size);
+
+	   	ground = ( (1 << _fmt_bits_per_sample) - 1)/2;
+		_t_state_duration = 1.0f/3500000.0f;
+		_pilot = round(2168 * _t_state_duration * _fmt_sample_rate);
+		_sync1 = round( 667 * _t_state_duration * _fmt_sample_rate);
+		_sync2 = round( 735 * _t_state_duration * _fmt_sample_rate);
+		_zero  = round( 855 * _t_state_duration * _fmt_sample_rate);
+		_one   = round(1710 * _t_state_duration * _fmt_sample_rate);
+		_pilot_l = round(_fmt_sample_rate / float(2 * _pilot));
+
+		_pilot_n = 0;
+	
+		_state = STATE_NOISE;
+		_slack = 6;
+		_pulsewidth = 0;
+		_ix = 0;
+		
+		while(1) 
+		{
+			if ((_ix % 1000) == 0)
+			{
+				_status = float(_infile.GetPos()) / _infile.Size() * 100; 
+				//_console.Print("Current: " + _infile.GetPos() + " To: " + _infile.Size() + "\r");
+				_console.Print("Conversion: " + String_Format("%2.2f", _status) + "%\r");
+			}
+			_ix++;
+				
+			_pulsewidth = get_pulsewidth(_infile);
+			if (_pulsewidth == 0)
+				break;
+				
+			switch(_state) 
+			{
+				case STATE_NOISE: 
+				{
+					if (abs(_pulsewidth - _pilot) < _slack) 
+					{ 
+						_pilot_n++;
+						if (_pilot_n > _pilot_l)
+						{
+							_state = STATE_PILOT;
+							_pilot_n=0;
+						}
+					}
+					else _pilot_n=0;
+				}
+				break;
+			
+				case STATE_PILOT: 
+				{
+					if(abs(_pulsewidth - _sync1) < _slack) 
+					{
+						_state = STATE_SYNC;
+					}
+					else if(abs(_pulsewidth - _pilot) < _slack) 
+					{
+						_pilot_n++;
+						_state = STATE_PILOT; 
+					}
+					else 
+					{
+						_state = STATE_NOISE;
+					}
+				}
+				break;
+				
+				case STATE_SYNC: 
+				{
+					if(abs(_pulsewidth - _sync2) < _slack) 
+					{
+						_state = STATE_DATA;
+					}
+					else 
+					{
+						_state = STATE_NOISE;
+					}
+				}
+				break;
+				
+				case STATE_DATA: 
+				{
+					if(abs(_pulsewidth - _one) < _slack) 
+					{
+						_state = STATE_ONE;
+					}
+					else if(abs(_pulsewidth - _zero)< 2*_slack) 
+					{
+						_state = STATE_ZERO;
+					}
+					else 
+					{
+						pause(1000, _outfile);
+						_state = STATE_NOISE;
+					}
+				}
+				break;
+				
+				case STATE_ONE: 
+				{
+					if(abs(_pulsewidth - _one) < _slack) 
+					{
+						push(1);
+						_state = STATE_DATA;
+					}
+					else 
+					{
+						pause(1000, _outfile);
+						_state = STATE_NOISE;
+					}
+				}
+				break;
+				
+				case STATE_ZERO: 
+				{
+					if(abs(_pulsewidth - _zero) < _slack) 
+					{
+						push(0);
+						_state = STATE_DATA;
+					}
+					else 
+					{
+						pause(1000, _outfile);
+						_state = STATE_NOISE;
+					}
+				}
+				break;
+				default: 
+				{
+					_console.PrintError("can't handle pulsewidth: " + string(_pulsewidth));
+				}
+			}
+		}
+	
+		pause(0, _outfile);
+		
+		_console.PrintLn("");
+		_console.PrintOk("Ok!");
+
+		GetEngine().FileClose(_infile);
+		GetEngine().FileClose(_outfile);
+		End(0);
+	}
+
+	virtual Final()
+	{
+		Buffer_Delete(blockData);		
+	}
+	
+	// Stuff to decode binary values read from audio file
+	function push(_v)
+	{
+		val = (val << 1) | _v;
+		b++;
+		if(b == 8)
+		{
+			//block.data[block.size++] = val;
+			Buffer_SetUByte(blockData, blockDataLen, val);
+			blockDataLen++;
+			val=0;
+			b=0;
+		}
+	}
+
+	function pause(_ms, _f) 
+	{ 
+		val=0; 
+		b=0;
+		
+		_f.WriteByte(0x10);
+		_f.WriteShort(_ms);
+		_f.WriteShort(blockDataLen);
+		_f.Write(blockData, 0, blockDataLen);
+
+		blockDataLen = 0;
+	}	
+
+	// Initialise a TZX file with a header
+	function createFile(_fname)
+	{
+		_file = GetEngine().FileOpen(_fname, FILE_MODE_WRITE);
+		if (!_file)
+			return null;
+			
+		_file.WriteChars("ZXTape!");
+		_file.WriteByte(0x1A);
+		_file.WriteByte(1);
+		_file.WriteByte('Z');
+	
+		_file.WriteByte(0x32);
+		_file.WriteShort(strlen(_fname)+2);
+		_file.WriteByte(1);
+		
+		_file.WriteByte(0x00);
+		_file.WriteByte(strlen(_fname)+1);
+		_file.WriteChars(_fname);
+		_file.WriteByte(0x00);			
+
+		return _file;
+	}
+
+	function get_pulsewidth(_file)
+	{
+		if (_file.IsEOF())
+			return 0;
+			
+		_count = 0;
+		_b = ubyte(_file.ReadByte());
+		_current_pulse = (_b > ground) ? PULSE_HIGH : PULSE_LOW;
+		_last_pulse = _current_pulse;
+		_count++;
+
+		while (!_file.IsEOF() && _last_pulse == _current_pulse)
+		{
+			_b = ubyte(_file.ReadByte());
+			_current_pulse = (_b > ground) ? PULSE_HIGH : PULSE_LOW;
+			_count++;
+		} 
+
+		return _count;
+	}
+
+}
